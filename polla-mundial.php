@@ -30,7 +30,7 @@ class PollaMundialMVP {
 
 
   public function register_admin_menu() {
-    // Menú principal
+    // Menú Princial
     add_menu_page(
       'Polla Mundial',
       'Polla Mundial',
