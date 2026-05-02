@@ -30,7 +30,7 @@ class PollaMundialMVP {
 
 
   public function register_admin_menu() {
-    // Menú Princial
+    // Menú principal
     add_menu_page(
       'Polla Mundial',
       'Polla Mundial',
@@ -705,17 +705,177 @@ public function handle_prediction_submit() {
  * Shortcode: [polla_pronosticos]
  * Lista partidos y permite guardar pronósticos antes del cierre.
  */
+ /*
+public function shortcode_pronosticos() {
+  if (!is_user_logged_in()) {
+    $login_url = wp_login_url(get_permalink());
+    return '<p>Debes iniciar sesión para hacer pronósticos. <a href="' . esc_url($login_url) . '">Iniciar sesión</a></p>';
+  }
 
-/* Estructura de tabla wp_polla_predictions:
-- id (PK)
-- user_id (INT)
-- match_id (INT)
-- pred_home_goals (INT)
-- pred_away_goals (INT)
-- locked_at (DATETIME) -> para bloquear edición después del cierre
-- created_at (DATETIME)
-- updated_at (DATETIME)
-*/
+  global $wpdb;
+
+  $teams_table   = $wpdb->prefix . 'polla_teams';
+  $matches_table = $wpdb->prefix . 'polla_matches';
+  $pred_table    = $wpdb->prefix . 'polla_predictions';
+
+  $user_id = get_current_user_id();
+  $now_ts  = current_time('timestamp');
+
+  // ✅ Helper URL por TÍTULO (evita hardcodear /ranking/)
+  $get_url = function(string $title, string $fallback = '/') : string {
+    $q = new WP_Query([
+      'post_type'              => 'page',
+      'post_status'            => 'publish',
+      'title'                  => $title,
+      'posts_per_page'         => 1,
+      'no_found_rows'          => true,
+      'ignore_sticky_posts'    => true,
+      'update_post_meta_cache' => false,
+      'update_post_term_cache' => false,
+      'fields'                 => 'ids',
+    ]);
+    if (!empty($q->posts)) return get_permalink((int)$q->posts[0]);
+    return home_url($fallback);
+  };
+
+  // Ajusta el título EXACTO de tu página de ranking global en WP
+  $url_ranking_global = $get_url('Ranking Global', '/ranking-global/');
+
+  // Traer partidos
+  $matches = $wpdb->get_results("
+    SELECT 
+      m.id, m.match_datetime, m.close_datetime, m.status,
+      h.name AS home_name, h.logo_url AS home_logo,
+      a.name AS away_name, a.logo_url AS away_logo
+    FROM $matches_table m
+    JOIN $teams_table h ON h.id = m.home_team_id
+    JOIN $teams_table a ON a.id = m.away_team_id
+    ORDER BY m.match_datetime ASC
+  ");
+
+  if (!$matches) {
+    return '<p>No hay partidos cargados aún.</p>';
+  }
+
+  // Traer pronósticos del usuario y mapearlos por match_id
+  $user_preds = $wpdb->get_results(
+    $wpdb->prepare(
+      "SELECT match_id, pred_home_goals, pred_away_goals
+       FROM $pred_table
+       WHERE user_id = %d",
+      $user_id
+    )
+  );
+
+  $pred_map = [];
+  foreach ($user_preds as $p) {
+    $pred_map[(int)$p->match_id] = [
+      'h' => (int)$p->pred_home_goals,
+      'a' => (int)$p->pred_away_goals,
+    ];
+  }
+
+  $html  = '';
+  $html .= '<div class="polla-page">';
+  $html .= '  <div class="polla-hero">';
+  $html .= '    <h2 class="polla-title">Pronósticos 🔥</h2>';
+  $html .= '    <p class="polla-subtitle">Elige marcadores antes del cierre y suma puntos.</p>';
+  $html .= '  </div>';
+
+  // Notificaciones
+  if (isset($_GET['polla_saved']) && $_GET['polla_saved'] === '1') {
+    $html .= '<div class="polla-alert polla-alert--ok">✅ Pronósticos guardados.</div>';
+  }
+
+  if (!empty($_GET['polla_warn'])) {
+    $key = sanitize_text_field($_GET['polla_warn']);
+    $warnings = get_transient($key);
+    if (is_array($warnings)) {
+      $html .= $this->get_warnings_html($warnings);
+      delete_transient($key);
+    }
+  }
+
+  $html .= '  <div class="polla-card polla-card--glow">';
+  $html .= '  <form method="post" class="polla-form">';
+  $html .= wp_nonce_field('polla_save_predictions_action', '_wpnonce', true, false);
+  $html .= '<input type="hidden" name="polla_save_predictions" value="1">';
+
+  $html .= '    <div class="polla-table-wrap">';
+  $html .= '    <table class="polla-table">';
+  $html .= '      <thead><tr>';
+  $html .= '        <th class="col-date">Fecha</th>';
+  $html .= '        <th class="col-match">Partido</th>';
+  $html .= '        <th class="col-status">Estado</th>';
+  $html .= '      </tr></thead><tbody>';
+
+  foreach ($matches as $m) {
+    $match_id = (int)$m->id;
+    $close_ts = strtotime($m->close_datetime);
+    $is_open  = ($now_ts < $close_ts);
+
+    $ph_val = isset($pred_map[$match_id]) ? $pred_map[$match_id]['h'] : '';
+    $pa_val = isset($pred_map[$match_id]) ? $pred_map[$match_id]['a'] : '';
+
+    // ✅ Consistente con tu SELECT (home_logo / away_logo)
+    $home_logo = !empty($m->home_logo) ? '<img class="polla-team-logo" src="' . esc_url($m->home_logo) . '" alt="">' : '';
+    $away_logo = !empty($m->away_logo) ? '<img class="polla-team-logo" src="' . esc_url($m->away_logo) . '" alt="">' : '';
+
+    $html .= '<tr class="polla-row">';
+
+    // FECHA
+    $html .= '  <td class="col-date">';
+    $html .= '    <div class="polla-date">'.esc_html($m->match_datetime).'</div>';
+    $html .= '    <div class="polla-close">Cierra: '.esc_html($m->close_datetime).'</div>';
+    $html .= '  </td>';
+
+    // PARTIDO + MARCADOR
+    $html .= '  <td class="col-match">';
+    $html .= '    <div class="polla-match-row">';
+
+    $html .= '      <div class="polla-team left">'.$home_logo.'<span class="polla-team-name">'.esc_html($m->home_name).'</span></div>';
+
+    $html .= '      <div class="polla-mid">';
+    if ($is_open) {
+      $html .= '        <input class="polla-input polla-score" type="number" min="0" max="20" name="pred['.$match_id.'][h]" value="'.esc_attr($ph_val).'">';
+      $html .= '        <span class="polla-vs">vs</span>';
+      $html .= '        <input class="polla-input polla-score" type="number" min="0" max="20" name="pred['.$match_id.'][a]" value="'.esc_attr($pa_val).'">';
+    } else {
+      $shown = ($ph_val !== '' && $pa_val !== '') ? esc_html($ph_val . ' : ' . $pa_val) : '—';
+      $html .= '        <span class="polla-locked-score">'.$shown.'</span>';
+    }
+    $html .= '      </div>';
+
+    $html .= '      <div class="polla-team right"><span class="polla-team-name">'.esc_html($m->away_name).'</span>'.$away_logo.'</div>';
+
+    $html .= '    </div>';
+    $html .= '  </td>';
+
+    // ESTADO
+    if ($is_open) {
+      $html .= '  <td class="col-status"><span class="polla-pill polla-pill--open">Abierto</span></td>';
+    } else {
+      $html .= '  <td class="col-status"><span class="polla-pill polla-pill--closed">Cerrado</span></td>';
+    }
+
+    $html .= '</tr>';
+  }
+
+  $html .= '      </tbody></table>';
+  $html .= '    </div>'; // table wrap
+
+  $html .= '    <div class="polla-form-actions">';
+  $html .= '      <button class="polla-btn" type="submit">Guardar pronósticos</button>';
+  $html .= '      <a class="polla-btn polla-btn--ghost" href="'.esc_url($url_ranking_global).'">Ver ranking</a>';
+  $html .= '    </div>';
+
+  $html .= '  </form>';
+  $html .= '  </div>'; // card
+  $html .= '</div>'; // page
+
+  return $html;
+}*/
+
 public function shortcode_pronosticos() {
   if (!is_user_logged_in()) {
     $login_url = wp_login_url(get_permalink());
@@ -864,8 +1024,10 @@ public function shortcode_pronosticos() {
     $away_logo = !empty($m->away_logo)
       ? '<img class="polla-team-logo" src="' . esc_url($m->away_logo) . '" alt="">'
       : '';
+      
+    $html .= '<tr class="polla-row'.($is_open ? ' polla-row--open' : '').'">';
 
-    $html .= '<tr class="polla-row">';
+    //$html .= '<tr class="polla-row">';
 
     // FECHA
     $html .= '  <td class="col-date">';/*
@@ -950,7 +1112,7 @@ public function shortcode_pronosticos() {
 
   return $html;
 }
-
+//Hasta aqui la pruebas
 
 //Handler para guardar especiales 
 public function handle_special_predictions_submit() {
@@ -1156,9 +1318,9 @@ public function shortcode_especiales() {
 
   <div class="polla-page">
     <div class="polla-hero">
-      <h2 class="polla-title">Predicciones Especiales 🏆</h2>
+      <h2 class="polla-title">Predicciones Especiales ❌ </h2>
       <p class="polla-subtitle">
-        Cierra el 11 de junio a las 12:00 PM (hora Colombia).
+        Deshabilitado: Este apartado solo estará disponible para el mundial. No para la champions.
       </p>
     </div>
 
@@ -1276,9 +1438,9 @@ public function shortcode_reglas() {
   $html .= '      <h3>🎯 Pronósticos por partido</h3>';
   $html .= '      <ul class="polla-list">';
   $html .= '        <li class="polla-list-item"><strong>Pleno (marcador exacto):</strong> 12 puntos </li>';
+  $html .= '        <li class="polla-list-item"><strong>Goles de un equipo + ganador:</strong> 7 puntos</li>';
   $html .= '        <li class="polla-list-item"><strong>Acertar ganador/empate:</strong> 5 puntos</li>';
-  $html .= '        <li class="polla-list-item"><strong>Acertar goles del local:</strong> +2 puntos</li>';
-  $html .= '        <li class="polla-list-item"><strong>Acertar goles del visitante:</strong> +2 puntos</li>';
+  $html .= '        <li class="polla-list-item"><strong>Acertar goles de un equipo:</strong> 2 puntos</li>';
   $html .= '      </ul>';
 
   $html .= '      <div class="polla-alert polla-alert--info" style="margin-top:12px;">';
@@ -1294,10 +1456,10 @@ public function shortcode_reglas() {
   $html .= '      </ul>';
   $html .= '      <p class="polla-muted" style="margin-top:8px;">No puedes repetir equipos en campeón/subcampeón/tercer puesto.</p>';
 
-  $html .= '      <h3 style="margin-top:18px;">👥 Ligas</h3>';
+  $html .= '      <h3 style="margin-top:18px;">👥 Parches</h3>';
   $html .= '      <ul class="polla-list">';
-  $html .= '        <li class="polla-list-item">Las ligas son para competir con amigos.</li>';
-  $html .= '        <li class="polla-list-item">El ranking por liga muestra solo miembros de esa liga.</li>';
+  $html .= '        <li class="polla-list-item">Los parches son para competir con amigos.</li>';
+  $html .= '        <li class="polla-list-item">El ranking de los parches muestra solo miembros de tu combo.</li>';
   $html .= '      </ul>';
 
   $html .= '    </div>';
@@ -1758,10 +1920,10 @@ public function shortcode_home() {
   $url_inicio        = $get_url('Inicio', '/');
   $url_pronosticos   = $get_url('Predicciones', '/predicciones/');
   $url_especiales    = $get_url('Especiales', '/especiales/');
-  $url_ligas         = $get_url('Ligas', '/ligas/');
-  $url_mis_ligas     = $get_url('Mis ligas', '/mis-ligas/');
+  $url_ligas         = $get_url('Parches', '/ligas/');
+  $url_mis_ligas     = $get_url('Mis parches', '/mis-ligas/');
   $url_ranking_glob  = $get_url('Ranking Global', '/ranking-global/');
-  $url_ranking_ligas = $get_url('Ranking ligas', '/ranking-ligas/'); // 👈 exacto como dijiste
+  $url_ranking_ligas = $get_url('Ranking parches', '/ranking-ligas/'); // 👈 exacto como dijiste
 
   $user_id   = get_current_user_id();
   $user      = wp_get_current_user();
@@ -1804,7 +1966,7 @@ public function shortcode_home() {
 
   // ✅ UI Home
   $html  = '<div class="polla-home">';
-  $html .= '  <h2 class="polla-title">Mundial 2026 ⚽ </h2>';
+  $html .= '  <h2 class="polla-title">Bonus Champions ⚽ </h2>';
   $html .= '  <p class="polla-welcome">Hola, <strong>'.esc_html($user_name).'</strong></p>';
 
   // Mini indicadores
@@ -1836,24 +1998,24 @@ public function shortcode_home() {
   $html .= '      <div class="polla-card__cta">Jugar →</div>';
   $html .= '    </a>';
 
-  // Ligas
+  // parches
   $html .= '    <a class="polla-card" href="'.esc_url($url_ligas).'">';
   $html .= '      <div class="polla-card__top">';
   $html .= '        <span class="polla-badge">👥</span>';
-  $html .= '        <div class="polla-card__title"> Ligas</div>';
+  $html .= '        <div class="polla-card__title"> Parches</div>';
   $html .= '      </div>';
-  $html .= '      <div class="polla-card__desc">Crea o únete con un código.</div>';
-  $html .= '      <div class="polla-card__cta">Ver ligas →</div>';
+  $html .= '      <div class="polla-card__desc">Crea o únete a un parche con un código.</div>';
+  $html .= '      <div class="polla-card__cta">Ver parches →</div>';
   $html .= '    </a>';
 
-  // Mis ligas
+  // Mis parches
   $html .= '    <a class="polla-card" href="'.esc_url($url_mis_ligas).'">';
   $html .= '      <div class="polla-card__top">';
   $html .= '        <span class="polla-badge">📌</span>';
-  $html .= '        <div class="polla-card__title"> Mis ligas</div>';
+  $html .= '        <div class="polla-card__title"> Mis parches</div>';
   $html .= '      </div>';
-  $html .= '      <div class="polla-card__desc">Tus códigos, invitaciones y accesos.</div>';
-  $html .= '      <div class="polla-card__cta">Abrir →</div>';
+  $html .= '      <div class="polla-card__desc">Tus parches, códigos e invitaciones..</div>';
+  $html .= '      <div class="polla-card__cta">Ver mis parches →</div>';
   $html .= '    </a>';
 
   // Ranking Global
@@ -1866,11 +2028,11 @@ public function shortcode_home() {
   $html .= '      <div class="polla-card__cta">Ver ranking →</div>';
   $html .= '    </a>';
 
-  // Ranking ligas
+  // Ranking parches
   $html .= '    <a class="polla-card" href="'.esc_url($url_ranking_ligas).'">';
   $html .= '      <div class="polla-card__top">';
   $html .= '        <span class="polla-badge">⚔️</span>';
-  $html .= '        <div class="polla-card__title"> Ranking ligas</div>';
+  $html .= '        <div class="polla-card__title"> Ranking parches</div>';
   $html .= '      </div>';
   $html .= '      <div class="polla-card__desc">Competencia directa con amigos.</div>';
   $html .= '      <div class="polla-card__cta">Abrir →</div>';
@@ -1927,7 +2089,7 @@ private function polla_get_user_rank_global($user_id) {
 public function shortcode_leaderboard_liga() {
   if (!is_user_logged_in()) {
     $login_url = wp_login_url(get_permalink());
-    return '<div class="polla-card"><p>Debes iniciar sesión para ver el ranking de una liga. <a class="polla-link" href="'.esc_url($login_url).'">Iniciar sesión</a></p></div>';
+    return '<div class="polla-card"><p>Debes iniciar sesión para ver el ranking de un parche. <a class="polla-link" href="'.esc_url($login_url).'">Iniciar sesión</a></p></div>';
   }
 
   global $wpdb;
@@ -1947,7 +2109,7 @@ public function shortcode_leaderboard_liga() {
     ));
   }
 
-  // Si no mandan liga, mostramos "elige una de mis ligas"
+  // Si no mandan liga, mostramos "elige uno de mis parches"
   if (!$group_id) {
     $user_id = get_current_user_id();
     $my = $wpdb->get_results($wpdb->prepare("
@@ -1959,13 +2121,13 @@ public function shortcode_leaderboard_liga() {
     ", $user_id));
 
     if (!$my) {
-      return '<div class="polla-card"><p class="polla-muted">No estás en ninguna liga aún.</p></div>';
+      return '<div class="polla-card"><p class="polla-muted">No estás en ningun parche aún.</p></div>';
     }
 
     $out  = '<section class="polla-page">';
     $out .= '  <div class="polla-hero">';
-    $out .= '    <h1 class="polla-title">Ranking por Liga ⚔️</h1>';
-    $out .= '    <p class="polla-subtitle">Elige una liga para ver la tabla y la pelea interna.</p>';
+    $out .= '    <h1 class="polla-title">Ranking por parche ⚔️</h1>';
+    $out .= '    <p class="polla-subtitle">Elige uno de tus parches para ver la tabla y la pelea interna.</p>';
     $out .= '  </div>';
 
     $out .= '  <div class="polla-card polla-card--glow">';
@@ -1975,7 +2137,7 @@ public function shortcode_leaderboard_liga() {
       $out .= '<li class="polla-list-item"><a class="polla-link" href="'.$url.'">'.esc_html($g->name).'</a> <span class="polla-chip">CODE '.esc_html($g->join_code).'</span></li>';
     }
     $out .= '    </ul>';
-    $out .= '    <p class="polla-hint"><small>Tip: Puedes usar el código de la liga para que tus amigos se unan a ella.</small></p>';
+    $out .= '    <p class="polla-hint"><small>Tip: Puedes usar el código del parche para que tus amigos se unan a el.</small></p>';
     $out .= '  </div>';
     $out .= '</section>';
 
@@ -1984,7 +2146,7 @@ public function shortcode_leaderboard_liga() {
 
   // Traer nombre de liga
   $group = $wpdb->get_row($wpdb->prepare("SELECT name, join_code FROM $groups_table WHERE id = %d", $group_id));
-  if (!$group) return '<div class="polla-card"><p class="polla-muted">La liga no existe.</p></div>';
+  if (!$group) return '<div class="polla-card"><p class="polla-muted">El parche no existe.</p></div>';
 
   // Validar que el usuario pertenece a la liga
   $user_id = get_current_user_id();
@@ -1993,7 +2155,7 @@ public function shortcode_leaderboard_liga() {
     $group_id, $user_id
   ));
   if (!$is_member) {
-    return '<div class="polla-card"><p class="polla-muted">No tienes acceso a esta liga.</p></div>';
+    return '<div class="polla-card"><p class="polla-muted">No tienes acceso a este parche.</p></div>';
   }
 
   // Ranking: todos los miembros, aunque tengan 0 puntos (LEFT JOIN)
@@ -2025,15 +2187,15 @@ public function shortcode_leaderboard_liga() {
   ORDER BY total_points DESC, u.display_name ASC
 ", $group_id));
 
-  if (!$rows) return '<div class="polla-card"><p class="polla-muted">Esta liga no tiene miembros aún.</p></div>';
+  if (!$rows) return '<div class="polla-card"><p class="polla-muted">Este parche no tiene miembros aún.</p></div>';
 
-  $back = esc_url(remove_query_arg(['group_id','code'], get_permalink()));
+  $back = esc_url(site_url('/mis-ligas/'));
 
   $html  = '<section class="polla-page">';
   $html .= '  <div class="polla-hero">';
   $html .= '    <h1 class="polla-title">Ranking: '.esc_html($group->name).'</h1>';
   $html .= '    <p class="polla-subtitle">Código: <span class="polla-chip">CODE '.esc_html($group->join_code).'</span></p>';
-  $html .= '    <p><a class="polla-link" href="'.$back.'">← Volver a mis ligas</a></p>';
+  $html .= '    <p><a class="polla-link" href="'.$back.'">← Volver a mis parches</a></p>';
   $html .= '  </div>';
 
   $html .= '  <div class="polla-card polla-card--glow">';
@@ -2047,6 +2209,9 @@ public function shortcode_leaderboard_liga() {
 
   $pos = 1;
   foreach ($rows as $r) {
+      $is_me = ((int)$r->ID === (int)get_current_user_id());
+      $me_class = $is_me ? ' is-me' : '';
+      
     $badge = '';
     if ($pos === 1) $badge = '<span class="polla-badge polla-badge--gold">🥇</span>';
     elseif ($pos === 2) $badge = '<span class="polla-badge polla-badge--silver">🥈</span>';
@@ -2057,7 +2222,7 @@ public function shortcode_leaderboard_liga() {
     elseif ($pos === 2) $row_class = ' is-top is-top-2';
     elseif ($pos === 3) $row_class = ' is-top is-top-3';
 
-    $html .= '<tr class="polla-row'.$row_class.'">';
+    $html .= '<tr class="polla-row'.$row_class.$me_class.'">';
     $html .= '  <td class="col-pos"><span class="polla-pos">'.$pos.'</span></td>';
     $html .= '  <td class="col-user"><span class="polla-user">'.esc_html($r->user).'</span>'.$badge.'</td>';
     $html .= '  <td class="col-points"><span class="polla-points">'.intval($r->total_points).'</span></td>';
@@ -2111,7 +2276,7 @@ public function handle_group_create() {
     $name, $user_id
   ));
   if ($already) {
-    wp_safe_redirect(add_query_arg('polla_gerr', 'Ya tienes una liga con ese nombre.', $redirect));
+    wp_safe_redirect(add_query_arg('polla_gerr', 'Ya tienes un parche con ese nombre.', $redirect));
     exit;
   }
 
@@ -2256,19 +2421,19 @@ public function shortcode_grupos() {
     if ($invite_code) {
       $login_url = wp_login_url(add_query_arg('join', $invite_code, get_permalink()));
     }
-    return '<div class="polla-card"><p>Debes iniciar sesión para crear/unirte a ligas. <a class="polla-link" href="'.esc_url($login_url).'">Iniciar sesión</a></p></div>';
+    return '<div class="polla-card"><p>Debes iniciar sesión para crear/unirte a parches. <a class="polla-link" href="'.esc_url($login_url).'">Iniciar sesión</a></p></div>';
   }
 
   // Mensajes
   $msg = '';
   if (!empty($_GET['polla_gok'])) {
-    $msg .= '<div class="polla-card" style="border-left:4px solid #2e7d32;">✅ Liga creada.</div>';
+    $msg .= '<div class="polla-card" style="border-left:4px solid #2e7d32;">✅ Parche creado.</div>';
   }
   if (!empty($_GET['polla_joined'])) {
-    $msg .= '<div class="polla-card" style="border-left:4px solid #2e7d32;">✅ Te uniste a la liga.</div>';
+    $msg .= '<div class="polla-card" style="border-left:4px solid #2e7d32;">✅ Te uniste al parche</div>';
   }
   if (!empty($_GET['polla_already'])) {
-    $msg .= '<div class="polla-card" style="border-left:4px solid #dba617;">⚠️ Ya perteneces a esa liga.</div>';
+    $msg .= '<div class="polla-card" style="border-left:4px solid #dba617;">⚠️ Ya perteneces a este parche.</div>';
   }
   if (!empty($_GET['polla_gerr'])) {
     $msg .= '<div class="polla-card" style="border-left:4px solid #b71c1c;">❌ '.esc_html(sanitize_text_field($_GET['polla_gerr'])).'</div>';
@@ -2276,8 +2441,8 @@ public function shortcode_grupos() {
 
   $html  = '<section class="polla-page">';
   $html .= '  <div class="polla-hero">';
-  $html .= '    <h1 class="polla-title">Ligas 👥</h1>';
-  $html .= '    <p class="polla-subtitle">Crea tu mini liga o únete con un código para competir con tus amigos.</p>';
+  $html .= '    <h1 class="polla-title">Parches 👥</h1>';
+  $html .= '    <p class="polla-subtitle">Crea tu mini parche o únete con un código para competir con tus amigos.</p>';
   $html .= '  </div>';
 
   $html .= $msg;
@@ -2294,7 +2459,7 @@ public function shortcode_grupos() {
     $html .=          wp_nonce_field('polla_join_group_action', '_wpnonce', true, false);
     $html .= '      <input type="hidden" name="redirect_to" value="'.esc_attr($current_url).'">';
     $html .= '      <input type="hidden" name="join_code" value="'.esc_attr($invite_code).'">';
-    $html .= '      <button class="polla-btn" type="submit" name="polla_join_group" value="1">Unirme a esta liga →</button>';
+    $html .= '      <button class="polla-btn" type="submit" name="polla_join_group" value="1">Unirme a este parche →</button>';
     $html .= '    </form>';
     $html .= '  </div>';
   }
@@ -2306,7 +2471,7 @@ public function shortcode_grupos() {
   $html .= '    <div class="polla-card polla-card--glow">';
   $html .= '      <div class="polla-card__top">';
   $html .= '        <span class="polla-badge">👥</span>';
-  $html .= '        <div class="polla-card__title">Crear mini liga</div>';
+  $html .= '        <div class="polla-card__title">Crear mi parche</div>';
   $html .= '      </div>';
   $html .= '      <div class="polla-card__desc">Ponle nombre y genera tu código de invitación.</div>';
   $html .= '      <form method="post" action="'.esc_url($current_url).'" style="margin-top:12px;">';
@@ -2344,7 +2509,105 @@ public function shortcode_grupos() {
   return $html;
 }
 
+public function shortcode_mis_ligas() {
+  if (!is_user_logged_in()) {
+    $login_url = wp_login_url(get_permalink());
+    return '<div class="polla-card"><p>Debes iniciar sesión para ver tus parches. <a href="'.esc_url($login_url).'">Iniciar sesión</a></p></div>';
+  }
 
+  global $wpdb;
+  $groups_table  = $wpdb->prefix . 'polla_groups';
+  $members_table = $wpdb->prefix . 'polla_group_members';
+
+  $user_id = get_current_user_id();
+
+  $rows = $wpdb->get_results(
+    $wpdb->prepare("
+      SELECT 
+        g.id, g.name, g.join_code, g.owner_user_id, g.created_at,
+        m.role, m.joined_at
+      FROM $members_table m
+      JOIN $groups_table g ON g.id = m.group_id
+      WHERE m.user_id = %d
+      ORDER BY m.joined_at DESC
+    ", $user_id)
+  );
+
+  if (!$rows) {
+    return '<section class="polla-page">
+      <div class="polla-hero">
+        <h1 class="polla-title">Mis parches 📌</h1>
+        <p class="polla-subtitle">Aquí verás tus parches, códigos e invitaciones.</p>
+      </div>
+      <div class="polla-card polla-card--glow">
+        <p class="polla-muted">Aún no estás en ningún parche. Ve a <strong>Parches</strong> para crear o unirte por código.</p>
+      </div>
+    </section>';
+  }
+
+  $html  = '<section class="polla-page">';
+  $html .= '  <div class="polla-hero">';
+  $html .= '    <h1 class="polla-title">Mis parches 📌</h1>';
+  $html .= '    <p class="polla-subtitle">Tus parches, códigos, invitaciones y accesos.</p>';
+  $html .= '  </div>';
+
+  $html .= '  <div class="polla-mis-parches-grid">';
+
+  foreach ($rows as $r) {
+    $is_owner = ((int)$r->owner_user_id === (int)$user_id);
+
+    $code = $is_owner ? esc_html($r->join_code) : '—';
+    $invite = $is_owner ? esc_url(site_url('/ligas/?join=' . rawurlencode($r->join_code))) : '';
+    $rank_url = esc_url(site_url('/ranking-liga/?group_id=' . intval($r->id)));
+
+    $role_label = ($r->role === 'owner') ? 'Dueño' : 'Miembro';
+
+    $html .= '<div class="polla-card polla-card--glow polla-parche-card">';
+    $html .= '  <div class="polla-card__top">';
+    $html .= '    <span class="polla-badge">👥</span>';
+    $html .= '    <div class="polla-card__title">'.esc_html($r->name).'</div>';
+    $html .= '  </div>';
+
+    $html .= '  <div class="polla-parche-meta">';
+    $html .= '    <div class="polla-parche-item"><span class="polla-parche-label">Mi rol</span><span class="polla-parche-value">'.esc_html($role_label).'</span></div>';
+    $html .= '    <div class="polla-parche-item"><span class="polla-parche-label">Desde</span><span class="polla-parche-value">'.esc_html($r->joined_at).'</span></div>';
+    $html .= '  </div>';
+
+    if ($is_owner) {
+      $wa_text = rawurlencode(
+        "⚽ Únete a mi parche en Polla Mundial\n\n" .
+        "Parche: " . $r->name . "\n" .
+        "Código: " . $r->join_code . "\n\n" .
+        "Entra aquí: " . $invite
+      );
+      $wa_url = 'https://wa.me/?text=' . $wa_text;
+
+      $html .= '  <div class="polla-parche-code-box">';
+      $html .= '    <div class="polla-parche-label">Código del parche</div>';
+      $html .= '    <div class="polla-parche-code">'.esc_html($r->join_code).'</div>';
+      $html .= '  </div>';
+
+      $html .= '  <div class="polla-parche-actions">';
+      $html .= '    <a class="polla-btn polla-btn--ghost" href="'.$invite.'" target="_blank" rel="noopener">Link de invitación</a>';
+      $html .= '    <a class="polla-btn polla-btn--ghost" href="'.$rank_url.'">Ver ranking</a>';
+      $html .= '    <a class="polla-btn polla-btn--wa" href="'.$wa_url.'" target="_blank" rel="noopener">Invitar por WhatsApp</a>';
+      $html .= '  </div>';
+    } else {
+      $html .= '  <div class="polla-parche-actions">';
+      $html .= '    <a class="polla-btn polla-btn--ghost" href="'.$rank_url.'">Ver ranking</a>';
+      $html .= '  </div>';
+    }
+
+    $html .= '</div>';
+  }
+
+  $html .= '  </div>';
+  $html .= '</section>';
+
+  return $html;
+}
+
+/*
 public function shortcode_mis_ligas() {
   if (!is_user_logged_in()) {
     $login_url = wp_login_url(get_permalink());
@@ -2370,10 +2633,10 @@ public function shortcode_mis_ligas() {
   );
 
   if (!$rows) {
-    return '<p>Aún no estás en ninguna liga. Ve a <strong>[polla_grupos]</strong> para crear o unirte por código.</p>';
+    return '<p>Aún no estás en ningun parche. Ve a <strong>[polla_grupos]</strong> para crear o unirte por código.</p>';
   }
 
-  $html  = '<h3>Mis ligas</h3>';
+  $html  = '<h3>Mis parches</h3>';
   $html .= '<table style="width:100%; border-collapse:collapse;">';
   $html .= '<thead><tr>
       <th style="text-align:left; padding:10px; border-bottom:1px solid #ddd;">Liga</th>
@@ -2403,11 +2666,22 @@ public function shortcode_mis_ligas() {
     if ($is_owner) {
     $html .= '<code>'.$code.'</code>';
 
-    $html .= '<br><small>'
-        . '<a href="'.$invite.'" target="_blank" rel="noopener">Link de invitación</a>'
-        . ' · '
-        . '<a href="'.$rank_url.'">Ver ranking</a>'
-        . '</small>';
+    $wa_text = rawurlencode(
+  "⚽ Únete a mi parche en Polla Mundial\n\n" .
+  "Parche: " . $r->name . "\n" .
+  "Código: " . $r->join_code . "\n\n" .
+  "Entra aquí: " . $invite
+);
+
+$wa_url = 'https://wa.me/?text=' . $wa_text;
+
+$html .= '<br><small>'
+  . '<a href="'.$invite.'" target="_blank" rel="noopener">Link de invitación</a>'
+  . ' · '
+  . '<a href="'.$rank_url.'">Ver ranking</a>'
+  . ' · '
+  . '<a href="'.$wa_url.'" target="_blank" rel="noopener">Invitar por WhatsApp</a>'
+  . '</small>';
 }  else {
   // Si NO es owner, puedes igual mostrar "Ver ranking" (sí tiene acceso por ser miembro)
     $html .= '<small><a href="'.$rank_url.'">Ver ranking</a></small>';
@@ -2423,7 +2697,7 @@ public function shortcode_mis_ligas() {
   $html .= '</tbody></table>';
 
   return $html;
-}
+}*/
 //Redirigir en liga
 private function polla_get_page_url_by_title(string $title, string $fallback = '/'): string {
   $q = new WP_Query([
