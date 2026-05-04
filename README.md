@@ -43,4 +43,4 @@ Active development – MVP already in use with real users.
 
 ## 👨‍💻 Author
 
-David Sánchez
+David Sánchez Gómez
